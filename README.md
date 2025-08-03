@@ -1,4 +1,4 @@
-# PharmaGPT
+# PharmaGEN
 
 🧬 **PharmaGPT** is a multilingual medical assistant and hypothetical drug concept generator powered by Google's Gemini AI. It allows users to describe their symptoms and allergies in their preferred language, then generates a conceptual diagnosis and hypothetical drug treatment.
 
