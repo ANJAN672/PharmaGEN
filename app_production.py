@@ -12,6 +12,18 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 import google.generativeai as genai
 from fpdf import FPDF
+try:
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    logger.warning("ReportLab not available, will use text file fallback")
 from config import Config
 
 # Configure logging
@@ -302,7 +314,7 @@ def get_gemini_response(prompt_text: str, chat_history: list = None, temp: float
             return f"❌ Error: Unable to process your request. Please try again later."
 
 def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
-    """Generates a text-based PDF report that handles all Unicode characters"""
+    """Generates a Unicode-compatible PDF using HTML rendering"""
     if not Config.ENABLE_PDF_DOWNLOAD:
         logger.warning("PDF download is disabled")
         return None
@@ -320,34 +332,121 @@ def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
         
         os.makedirs(Config.PDF_OUTPUT_DIR, exist_ok=True)
         
-        # Create a simple text file instead of PDF to avoid Unicode issues
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        txt_filename = f"pharmagen_report_{timestamp}.txt"
-        txt_output_path = os.path.join(Config.PDF_OUTPUT_DIR, txt_filename)
         
-        # Write the report as plain text with full Unicode support
-        with open(txt_output_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 70 + "\n")
-            f.write(f"{Config.APP_TITLE} - MEDICAL REPORT\n")
-            f.write("=" * 70 + "\n\n")
-            f.write(f"Report Language: {user_language}\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 70 + "\n\n")
-            
-            # Clean up the summary and write it
-            clean_summary = translated_summary.replace("###", "").strip()
-            f.write(clean_summary)
-            
-            f.write("\n\n" + "=" * 70 + "\n")
-            f.write("DISCLAIMER\n")
-            f.write("=" * 70 + "\n")
-            f.write("This is an AI-generated report for conceptual purposes only.\n")
-            f.write("Always consult a qualified medical professional for health concerns.\n")
-            f.write("Hypothetical drugs mentioned are NOT real medications.\n")
-            f.write("=" * 70 + "\n")
+        # Generate HTML version that can be printed to PDF by browser
+        html_filename = f"pharmagen_report_{timestamp}.html"
+        html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
         
-        logger.info(f"Report saved to {txt_output_path}")
-        return txt_output_path
+        # Clean up the summary
+        clean_summary = translated_summary.replace("###", "<h3>").replace(":", ":</h3>", 1)
+        
+        # Create HTML with proper Unicode support
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{Config.APP_TITLE} - Medical Report</title>
+    <style>
+        @page {{
+            size: A4;
+            margin: 2cm;
+        }}
+        body {{
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .header {{
+            text-align: center;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }}
+        .header h1 {{
+            color: #667eea;
+            margin: 0;
+            font-size: 28px;
+        }}
+        .meta {{
+            color: #666;
+            font-size: 14px;
+            margin-top: 10px;
+        }}
+        h3 {{
+            color: #667eea;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 8px;
+            margin-top: 25px;
+        }}
+        .content {{
+            margin: 20px 0;
+        }}
+        .disclaimer {{
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 30px;
+        }}
+        .disclaimer h3 {{
+            color: #856404;
+            margin-top: 0;
+        }}
+        .disclaimer p {{
+            margin: 5px 0;
+            color: #856404;
+        }}
+        @media print {{
+            body {{
+                margin: 0;
+                padding: 15mm;
+            }}
+            .no-print {{
+                display: none;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🧬 {Config.APP_TITLE}</h1>
+        <h2>Medical Report</h2>
+        <div class="meta">
+            <p><strong>Report Language:</strong> {user_language}</p>
+            <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </div>
+    </div>
+    
+    <div class="content">
+        {clean_summary}
+    </div>
+    
+    <div class="disclaimer">
+        <h3>⚠️ DISCLAIMER</h3>
+        <p><strong>This is an AI-generated report for conceptual purposes only.</strong></p>
+        <p>• Always consult a qualified medical professional for health concerns.</p>
+        <p>• Hypothetical drugs mentioned are NOT real medications.</p>
+        <p>• This report is for educational purposes only.</p>
+    </div>
+    
+    <div class="no-print" style="margin-top: 30px; text-align: center;">
+        <button onclick="window.print()" style="background: #667eea; color: white; border: none; padding: 12px 30px; font-size: 16px; border-radius: 5px; cursor: pointer;">
+            Print / Save as PDF
+        </button>
+    </div>
+</body>
+</html>"""
+        
+        # Write HTML file
+        with open(html_output_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        logger.info(f"Report saved to {html_output_path}")
+        return html_output_path
         
     except Exception as e:
         logger.error(f"Error generating report: {e}", exc_info=True)
@@ -571,6 +670,9 @@ Keep each section brief and direct. No extra explanations or bullet point breakd
                 logger.info(f"Translated diagnosis length: {len(translated_diagnosis)}")
                 logger.info(f"Translated drug length: {len(translated_drug)}")
                 logger.info(f"Translated dosage length: {len(translated_dosage)}")
+                logger.info(f"Translated safety length: {len(translated_safety)}")
+                logger.info(f"Safety original: {safety_simplified[:100]}...")
+                logger.info(f"Safety translated: {translated_safety[:100]}...")
                 
                 translated_summary = f"### {symptoms_title}:\n{state['symptoms_user_lang']}\n\n"
                 translated_summary += f"### {allergies_title}:\n{state['allergies_user_lang']}\n\n"
