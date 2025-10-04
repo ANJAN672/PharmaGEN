@@ -218,19 +218,29 @@ def gemini_translate(text: str, src_lang_code: str, tgt_lang_code: str, temp: fl
     # Create a strict translation prompt
     if effective_src_lang_code != "auto":
         src_lang_name = next((name for name, code in LANG_CODES.items() if code == effective_src_lang_code), effective_src_lang_code)
-        prompt = f"""Translate this text from {src_lang_name} to {tgt_lang_name}. 
-IMPORTANT: Provide ONLY the direct translation. Do not include explanations, alternatives, or breakdowns.
+        prompt = f"""You are a professional translator. Translate the following text from {src_lang_name} to {tgt_lang_name}.
 
-Text to translate: {text}
+CRITICAL RULES:
+1. Translate EVERYTHING to {tgt_lang_name}
+2. Do NOT leave any English words
+3. Do NOT add explanations or notes
+4. Output ONLY the translated text
 
-Translation:"""
+Text: {text}
+
+{tgt_lang_name} Translation:"""
     else:
-        prompt = f"""Translate this text to {tgt_lang_name}. 
-IMPORTANT: Provide ONLY the direct translation. Do not include explanations, alternatives, or breakdowns.
+        prompt = f"""You are a professional translator. Translate the following text to {tgt_lang_name}.
 
-Text to translate: {text}
+CRITICAL RULES:
+1. Translate EVERYTHING to {tgt_lang_name}
+2. Do NOT leave any English words
+3. Do NOT add explanations or notes
+4. Output ONLY the translated text
 
-Translation:"""
+Text: {text}
+
+{tgt_lang_name} Translation:"""
     
     try:
         response = gemini_client.generate_content(
