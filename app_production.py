@@ -545,8 +545,9 @@ Keep each section brief and direct. No extra explanations or bullet point breakd
                 state["drug_concept_full_en"] = diagnosis_response
                 state["stage"] = CHAT_STAGE_GENERAL_QNA
                 
-                bot_response_en = diagnosis_response
-                bot_response_user_lang = gemini_translate(diagnosis_response, "en", user_lang_code)
+                # Don't show the full diagnosis in chat - just a confirmation
+                bot_response_en = "✅ Analysis complete! Your medical report is ready. Please check the Medical Report panel on the right."
+                bot_response_user_lang = gemini_translate(bot_response_en, "en", user_lang_code)
                 
                 state["gemini_chat_history_manual"].append({
                     "role": "model", 
