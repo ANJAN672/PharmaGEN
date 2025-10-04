@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  pharmagen:
+    build: .
+    container_name: pharmagen-app
+    ports:
+      - "7860:7860"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=7860
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - pharmagen-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: pharmagen-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - pharmagen-network
+    command: redis-server --appendonly yes
+
+volumes:
+  redis-data:
+
+networks:
+  pharmagen-network:
+    driver: bridge
