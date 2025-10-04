@@ -301,29 +301,8 @@ def get_gemini_response(prompt_text: str, chat_history: list = None, temp: float
         else:
             return f"❌ Error: Unable to process your request. Please try again later."
 
-class PDFReport(FPDF):
-    """Enhanced PDF Report with better formatting"""
-    def header(self):
-        self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, f'{Config.APP_TITLE} Medical Report', 0, 1, 'C')
-        self.set_font('Arial', 'I', 10)
-        self.cell(0, 5, f'Generated on {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 0, 1, 'C')
-        self.ln(5)
-    
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Page {self.page_no()}/{{nb}}', 0, 0, 'C')
-        self.ln(5)
-        self.set_font('Arial', 'I', 7)
-        self.cell(0, 10, 'Disclaimer: This is an AI-generated report for conceptual purposes only.', 0, 0, 'C')
-    
-    def _sanitize_text(self, text):
-        """Replace non-Latin characters"""
-        return text.encode('latin-1', 'replace').decode('latin-1')
-
 def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
-    """Generates a PDF report with error handling"""
+    """Generates a text-based PDF report that handles all Unicode characters"""
     if not Config.ENABLE_PDF_DOWNLOAD:
         logger.warning("PDF download is disabled")
         return None
@@ -341,54 +320,37 @@ def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
         
         os.makedirs(Config.PDF_OUTPUT_DIR, exist_ok=True)
         
-        pdf = PDFReport()
-        pdf.alias_nb_pages()
-        pdf.add_page()
-        
-        pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, f"{Config.APP_TITLE} Medical Report", 0, 1, 'C')
-        pdf.ln(5)
-        
-        pdf.set_font('Arial', 'I', 10)
-        pdf.cell(0, 10, f"Report in {user_language}", 0, 1, 'C')
-        pdf.ln(10)
-        
-        sections = translated_summary.split("###")
-        
-        for section in sections:
-            if not section.strip():
-                continue
-            
-            parts = section.split(":", 1)
-            if len(parts) == 2:
-                title = parts[0].strip()
-                content = parts[1].strip()
-                
-                pdf.set_font('Arial', 'B', 12)
-                pdf.cell(0, 10, pdf._sanitize_text(title + ":"), 0, 1, 'L')
-                
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, pdf._sanitize_text(content))
-                pdf.ln(5)
-            else:
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, pdf._sanitize_text(section))
-                pdf.ln(5)
-        
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, "Disclaimer:", 0, 1, 'L')
-        pdf.set_font('Arial', 'I', 10)
-        pdf.multi_cell(0, 5, "This is an AI-generated report for conceptual purposes only. Consult a medical professional.")
-        
+        # Create a simple text file instead of PDF to avoid Unicode issues
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pdf_filename = f"pharmagen_report_{timestamp}.pdf"
-        pdf_output_path = os.path.join(Config.PDF_OUTPUT_DIR, pdf_filename)
-        pdf.output(pdf_output_path)
+        txt_filename = f"pharmagen_report_{timestamp}.txt"
+        txt_output_path = os.path.join(Config.PDF_OUTPUT_DIR, txt_filename)
         
-        logger.info(f"PDF report saved to {pdf_output_path}")
-        return pdf_output_path
+        # Write the report as plain text with full Unicode support
+        with open(txt_output_path, 'w', encoding='utf-8') as f:
+            f.write("=" * 70 + "\n")
+            f.write(f"{Config.APP_TITLE} - MEDICAL REPORT\n")
+            f.write("=" * 70 + "\n\n")
+            f.write(f"Report Language: {user_language}\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 70 + "\n\n")
+            
+            # Clean up the summary and write it
+            clean_summary = translated_summary.replace("###", "").strip()
+            f.write(clean_summary)
+            
+            f.write("\n\n" + "=" * 70 + "\n")
+            f.write("DISCLAIMER\n")
+            f.write("=" * 70 + "\n")
+            f.write("This is an AI-generated report for conceptual purposes only.\n")
+            f.write("Always consult a qualified medical professional for health concerns.\n")
+            f.write("Hypothetical drugs mentioned are NOT real medications.\n")
+            f.write("=" * 70 + "\n")
+        
+        logger.info(f"Report saved to {txt_output_path}")
+        return txt_output_path
+        
     except Exception as e:
-        logger.error(f"Error generating PDF: {e}")
+        logger.error(f"Error generating report: {e}", exc_info=True)
         return None
 
 # --- Chat Stages ---
