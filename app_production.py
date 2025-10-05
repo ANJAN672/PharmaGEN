@@ -13,17 +13,11 @@ from typing import Optional, Dict, Any, List, Tuple
 import google.generativeai as genai
 from fpdf import FPDF
 try:
-    from reportlab.lib.pagesizes import letter, A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
-    REPORTLAB_AVAILABLE = True
+    from weasyprint import HTML
+    WEASYPRINT_AVAILABLE = True
 except ImportError:
-    REPORTLAB_AVAILABLE = False
-    logger.warning("ReportLab not available, will use text file fallback")
+    WEASYPRINT_AVAILABLE = False
+    logger.warning("WeasyPrint not available, will use HTML fallback")
 from config import Config
 
 # Configure logging
@@ -258,16 +252,39 @@ Text: {text}
         response = gemini_client.generate_content(
             prompt, 
             generation_config=genai.GenerationConfig(
-                temperature=temp,
-                max_output_tokens=500
+                temperature=0.1,
+                max_output_tokens=1000
             )
         )
         result = response.text.strip()
         
+        # Check if translation actually happened (not just returning English)
+        # If result is too similar to input and target is not English, retry with stronger prompt
+        if tgt_lang_code != 'en' and len(result) > 0:
+            # If result contains mostly English characters and target is non-Latin, it failed
+            english_chars = sum(1 for c in result if ord(c) < 128)
+            total_chars = len(result)
+            if total_chars > 0 and (english_chars / total_chars) > 0.8:
+                # Translation failed, try again with even stronger prompt
+                logger.warning(f"Translation may have failed (too much English), retrying...")
+                retry_prompt = f"""TRANSLATE TO {tgt_lang_name.upper()} ONLY. NO ENGLISH ALLOWED.
+
+English text: {text}
+
+Your {tgt_lang_name} translation (MUST be in {tgt_lang_name} script):"""
+                
+                retry_response = gemini_client.generate_content(
+                    retry_prompt,
+                    generation_config=genai.GenerationConfig(temperature=0.1, max_output_tokens=1000)
+                )
+                result = retry_response.text.strip()
+        
         # Clean up any extra explanations
-        if '\n' in result:
-            # Take only the first line if multiple lines returned
-            result = result.split('\n')[0].strip()
+        if '\n' in result and len(result.split('\n')) > 5:
+            # If too many lines, probably has explanations
+            lines = result.split('\n')
+            # Take the longest line as it's likely the translation
+            result = max(lines, key=len).strip()
         
         set_cache(cache_k, result)
         return result
@@ -314,7 +331,7 @@ def get_gemini_response(prompt_text: str, chat_history: list = None, temp: float
             return f"❌ Error: Unable to process your request. Please try again later."
 
 def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
-    """Generates a Unicode-compatible PDF using HTML rendering"""
+    """Generates a direct PDF download with full Unicode support"""
     if not Config.ENABLE_PDF_DOWNLOAD:
         logger.warning("PDF download is disabled")
         return None
@@ -327,18 +344,16 @@ def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
         translated_summary = state_data.get("translated_summary", "")
         
         if not translated_summary:
-            logger.warning("No summary available to generate PDF")
+            logger.warning("No summary available to generate report")
             return None
         
         os.makedirs(Config.PDF_OUTPUT_DIR, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pdf_filename = f"PharmaGEN_Report_{timestamp}.pdf"
+        pdf_output_path = os.path.join(Config.PDF_OUTPUT_DIR, pdf_filename)
         
-        # Generate HTML version that can be printed to PDF by browser
-        html_filename = f"pharmagen_report_{timestamp}.html"
-        html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
-        
-        # Clean up the summary
+        # Clean up the summary and format as HTML
         clean_summary = translated_summary.replace("###", "<h3>").replace(":", ":</h3>", 1)
         
         # Create HTML with proper Unicode support
@@ -441,12 +456,29 @@ def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
 </body>
 </html>"""
         
-        # Write HTML file
-        with open(html_output_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        logger.info(f"Report saved to {html_output_path}")
-        return html_output_path
+        # Generate PDF directly from HTML
+        if WEASYPRINT_AVAILABLE:
+            try:
+                HTML(string=html_content).write_pdf(pdf_output_path)
+                logger.info(f"PDF report saved to {pdf_output_path}")
+                return pdf_output_path
+            except Exception as pdf_error:
+                logger.error(f"WeasyPrint PDF generation failed: {pdf_error}")
+                # Fallback to HTML
+                html_filename = f"PharmaGEN_Report_{timestamp}.html"
+                html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
+                with open(html_output_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                logger.info(f"Fallback: HTML report saved to {html_output_path}")
+                return html_output_path
+        else:
+            # No WeasyPrint, save as HTML
+            html_filename = f"PharmaGEN_Report_{timestamp}.html"
+            html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
+            with open(html_output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            logger.info(f"HTML report saved to {html_output_path}")
+            return html_output_path
         
     except Exception as e:
         logger.error(f"Error generating report: {e}", exc_info=True)
@@ -882,7 +914,7 @@ def create_interface():
                     clear_btn = gr.Button("🔄 New", variant="stop", scale=1)
                 
                 if Config.ENABLE_PDF_DOWNLOAD:
-                    pdf_output = gr.File(label="", visible=False)
+                    pdf_output = gr.File(label="📄 Download Report", visible=True, interactive=False)
         
         # Compact disclaimer
         if Config.SHOW_DISCLAIMER:
