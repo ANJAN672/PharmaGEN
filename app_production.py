@@ -12,12 +12,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 import google.generativeai as genai
 from fpdf import FPDF
-try:
-    from weasyprint import HTML
-    WEASYPRINT_AVAILABLE = True
-except ImportError:
-    WEASYPRINT_AVAILABLE = False
-    logger.warning("WeasyPrint not available, will use HTML fallback")
+import webbrowser
 from config import Config
 
 # Configure logging
@@ -331,13 +326,13 @@ def get_gemini_response(prompt_text: str, chat_history: list = None, temp: float
             return f"❌ Error: Unable to process your request. Please try again later."
 
 def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
-    """Generates a direct PDF download with full Unicode support"""
+    """Generates HTML report and opens in browser for printing"""
     if not Config.ENABLE_PDF_DOWNLOAD:
         logger.warning("PDF download is disabled")
         return None
     
     try:
-        logger.info("Generating PDF report...")
+        logger.info("Generating HTML report...")
         state_data = chat_state.copy()
         
         user_language = state_data.get("language", "English")
@@ -350,8 +345,8 @@ def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
         os.makedirs(Config.PDF_OUTPUT_DIR, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pdf_filename = f"PharmaGEN_Report_{timestamp}.pdf"
-        pdf_output_path = os.path.join(Config.PDF_OUTPUT_DIR, pdf_filename)
+        html_filename = f"PharmaGEN_Report_{timestamp}.html"
+        html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
         
         # Clean up the summary and format as HTML
         clean_summary = translated_summary.replace("###", "<h3>").replace(":", ":</h3>", 1)
@@ -456,29 +451,20 @@ def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
 </body>
 </html>"""
         
-        # Generate PDF directly from HTML
-        if WEASYPRINT_AVAILABLE:
-            try:
-                HTML(string=html_content).write_pdf(pdf_output_path)
-                logger.info(f"PDF report saved to {pdf_output_path}")
-                return pdf_output_path
-            except Exception as pdf_error:
-                logger.error(f"WeasyPrint PDF generation failed: {pdf_error}")
-                # Fallback to HTML
-                html_filename = f"PharmaGEN_Report_{timestamp}.html"
-                html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
-                with open(html_output_path, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                logger.info(f"Fallback: HTML report saved to {html_output_path}")
-                return html_output_path
-        else:
-            # No WeasyPrint, save as HTML
-            html_filename = f"PharmaGEN_Report_{timestamp}.html"
-            html_output_path = os.path.join(Config.PDF_OUTPUT_DIR, html_filename)
-            with open(html_output_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            logger.info(f"HTML report saved to {html_output_path}")
-            return html_output_path
+        # Write HTML file
+        with open(html_output_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        logger.info(f"HTML report saved to {html_output_path}")
+        
+        # Auto-open in browser
+        try:
+            webbrowser.open(f'file:///{os.path.abspath(html_output_path)}')
+            logger.info(f"Opened report in browser")
+        except Exception as browser_error:
+            logger.warning(f"Could not auto-open browser: {browser_error}")
+        
+        return html_output_path
         
     except Exception as e:
         logger.error(f"Error generating report: {e}", exc_info=True)
@@ -623,7 +609,10 @@ def process_chat(message: str, history: list, state: Dict[str, Any]):
                 symptoms = state["symptoms_en"]
                 allergies = state["allergies_en"]
                 
-                prompt = f"""Based on the symptoms and allergies below, provide a concise medical assessment.
+                # Get user's language name
+                user_lang_name = state.get("language", "English")
+                
+                prompt = f"""Based on the symptoms and allergies below, provide a concise medical assessment IN ENGLISH FIRST.
 
 Symptoms: {symptoms}
 Allergies: {allergies}
@@ -642,7 +631,8 @@ Hypothetical Dosage/Instructions:
 Allergy/Safety Note:
 [2-3 sentences about safety considerations given the patient's allergies]
 
-Keep each section brief and direct. No extra explanations or bullet point breakdowns."""
+IMPORTANT: Keep each section brief and direct. No extra explanations or bullet point breakdowns.
+Write EVERYTHING in simple English so it can be easily translated to {user_lang_name}."""
                 
                 diagnosis_response = get_gemini_response(prompt)
                 state["drug_concept_full_en"] = diagnosis_response
@@ -692,19 +682,99 @@ Keep each section brief and direct. No extra explanations or bullet point breakd
                 dosage_title = gemini_translate("Dosage", "en", user_lang_code)
                 safety_title = gemini_translate("Safety Notes", "en", user_lang_code)
                 
-                # Translate each section with explicit instructions
-                translated_diagnosis = gemini_translate(diagnosis_simplified, "en", user_lang_code) if diagnosis_simplified != "Not found" else diagnosis_simplified
-                translated_drug = gemini_translate(drug_concept_simplified, "en", user_lang_code) if drug_concept_simplified != "Not found" else drug_concept_simplified
-                translated_dosage = gemini_translate(dosage_simplified, "en", user_lang_code) if dosage_simplified != "Not found" else dosage_simplified
-                translated_safety = gemini_translate(safety_simplified, "en", user_lang_code) if safety_simplified != "Not found" else safety_simplified
+                # ULTIMATE NUCLEAR OPTION: Word-by-word if needed
+                def ultimate_translate(text, lang_code, section_name):
+                    """Most aggressive translation possible"""
+                    if not text or text == "Not found":
+                        return text
+                    
+                    lang_name = next((name for name, code in LANG_CODES.items() if code == lang_code), "target language")
+                    
+                    # Multiple splitting strategies
+                    import re
+                    
+                    # First try: Split by periods, commas, and line breaks
+                    chunks = re.split(r'[.\n,]', text)
+                    chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
+                    
+                    translated_chunks = []
+                    
+                    for i, chunk in enumerate(chunks):
+                        if not chunk:
+                            continue
+                        
+                        # ULTRA AGGRESSIVE prompt
+                        ultra_prompt = f"""TRANSLATE TO {lang_name.upper()} ONLY - NO MIXING ALLOWED
+
+RULE: Every single word must be {lang_name}. No English words at all.
+
+English text: {chunk}
+
+Write the complete {lang_name} translation (use {lang_name} script only):"""
+                        
+                        max_attempts = 2
+                        best_result = chunk
+                        
+                        for attempt in range(max_attempts):
+                            try:
+                                response = gemini_client.generate_content(
+                                    ultra_prompt,
+                                    generation_config=genai.GenerationConfig(
+                                        temperature=0.0 if attempt == 0 else 0.1,
+                                        max_output_tokens=300
+                                    )
+                                )
+                                result = response.text.strip()
+                                
+                                # Clean up result
+                                if '\n' in result:
+                                    lines = result.split('\n')
+                                    # Take the line with most non-English characters
+                                    best_line = ""
+                                    min_english = float('inf')
+                                    
+                                    for line in lines:
+                                        if line.strip():
+                                            english_count = sum(1 for c in line if ord(c) < 128 and c.isalpha())
+                                            if english_count < min_english:
+                                                min_english = english_count
+                                                best_line = line.strip()
+                                    
+                                    result = best_line if best_line else result.split('\n')[0]
+                                
+                                # Check if this attempt is better
+                                english_chars = sum(1 for c in result if ord(c) < 128 and c.isalpha())
+                                total_chars = sum(1 for c in result if c.isalpha())
+                                
+                                if total_chars > 0:
+                                    english_ratio = english_chars / total_chars
+                                    if english_ratio < 0.2:  # Less than 20% English
+                                        best_result = result
+                                        logger.info(f"{section_name} chunk {i+1}: {english_ratio*100:.1f}% English - GOOD")
+                                        break
+                                    else:
+                                        logger.warning(f"{section_name} chunk {i+1} attempt {attempt+1}: {english_ratio*100:.1f}% English - RETRY")
+                                        best_result = result  # Keep trying
+                                
+                            except Exception as e:
+                                logger.error(f"Translation attempt {attempt+1} failed: {e}")
+                                continue
+                        
+                        translated_chunks.append(best_result)
+                    
+                    # Join with appropriate punctuation
+                    result = '. '.join(translated_chunks)
+                    logger.info(f"{section_name} final translation completed")
+                    return result
                 
-                # Log translations for debugging
-                logger.info(f"Translated diagnosis length: {len(translated_diagnosis)}")
-                logger.info(f"Translated drug length: {len(translated_drug)}")
-                logger.info(f"Translated dosage length: {len(translated_dosage)}")
-                logger.info(f"Translated safety length: {len(translated_safety)}")
-                logger.info(f"Safety original: {safety_simplified[:100]}...")
-                logger.info(f"Safety translated: {translated_safety[:100]}...")
+                # Use ULTIMATE nuclear option for ALL sections
+                translated_diagnosis = ultimate_translate(diagnosis_simplified, user_lang_code, "Diagnosis")
+                translated_drug = ultimate_translate(drug_concept_simplified, user_lang_code, "Medicine")
+                translated_dosage = ultimate_translate(dosage_simplified, user_lang_code, "Dosage")
+                translated_safety = ultimate_translate(safety_simplified, user_lang_code, "Safety")
+                
+                # Log final results
+                logger.info(f"Final translations completed for all sections")
                 
                 translated_summary = f"### {symptoms_title}:\n{state['symptoms_user_lang']}\n\n"
                 translated_summary += f"### {allergies_title}:\n{state['allergies_user_lang']}\n\n"
