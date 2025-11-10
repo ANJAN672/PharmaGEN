@@ -1,0 +1,43 @@
+[tool.poetry]
+name = "pharmagen"
+version = "0.1.0"
+description = "Multilingual medical assistant and hypothetical drug concept generator powered by Google Gemini."
+authors = ["PharmaGEN Contributors <support@example.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/your-org/pharmagen"
+repository = "https://github.com/your-org/pharmagen"
+keywords = ["gradio", "gemini", "medical", "ai", "chatbot"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+gradio = ">=4.0.0"
+google-generativeai = ">=0.3.0"
+fpdf2 = ">=2.7.8"
+python-dotenv = ">=1.0.0"
+slowapi = ">=0.1.9"
+redis = { version = ">=5.0.0", optional = true }
+gunicorn = ">=21.2.0"
+uvicorn = { version = ">=0.24.0", extras = ["standard"] }
+prometheus-client = ">=0.19.0"
+cryptography = ">=41.0.0"
+
+[tool.poetry.extras]
+redis = ["redis"]
+
+[tool.poetry.scripts]
+pharmagen = "run:main"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+black = "^24.0.0"
+ruff = "^0.6.4"
+
+[tool.uv]
+managed = true
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
+

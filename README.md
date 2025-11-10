@@ -14,12 +14,12 @@
 
 ## 🐍 Python Version
 
-**Recommended: Python 3.11.x**
+**Required (pyproject): Python 3.10+ — Recommended: Python 3.11.x**
 
 - **Performance**: 10-60% faster than Python 3.10
 - **Stability**: Production-ready with long-term support until October 2027
 - **Compatibility**: Full support for all dependencies
-- **Minimum**: Python 3.9+
+- **Minimum**: Python 3.10 (project metadata enforces `^3.10`)
 
 ## ⚠️ Important Disclaimer
 
@@ -31,155 +31,79 @@
 
 ## 🚀 Quick Start
 
-### Method 1: Using Anaconda (Recommended for Windows)
+Pick the workflow that matches your toolchain. All options share the same environment steps for configuring the Gemini API key.
 
-#### Step 1: Open Anaconda Prompt
-- Search for "Anaconda Prompt" in Windows Start Menu
-- Run as Administrator (optional but recommended)
+### Option A: ⚡ `uv` (Fastest install, works everywhere)
 
-#### Step 2: Create Python 3.11 Environment
 ```bash
-# Create new conda environment with Python 3.11
-conda create -n pharmagen python=3.11 -y
+# 1. Make sure you're inside the project folder
+cd /path/to/PharmaGEN
 
-# Activate the environment
-conda activate pharmagen
+# 2. (Optional) Install/manage the Python runtime
+uv python install 3.11
+
+# 3. Create an isolated .venv managed by uv (safe for other projects)
+uv venv --python 3.11 .venv               # reuse existing env
+# If prompted about an existing .venv, rerun: uv venv --clear
+.venv\Scripts\activate
+# 4. Install requirements into that .venv
+uv pip install -r requirements.txt
+
+# 5. Prevent PyFPDF/fpdf2 namespace conflicts (safe to run even if PyFPDF isn't installed)
+uv pip uninstall -y pyfpdf   # ignore message if package isn't installed
+
+# 6. Copy the environment template and add your Gemini key
+copy example.env .env        # Windows
+cp example.env .env          # macOS / Linux
+
+# 7. Run the production build using the new .venv
+uv run pharmagen             # or: uv run python app_production.py
 ```
 
-#### Step 3: Navigate to Project Location
+### Option B: 🪄 Poetry
+
 ```bash
-# Change directory to your project folder
-cd C:\Users\ANJAN27_new\OneDrive\Desktop\PharmaGEN
+cd /path/to/PharmaGEN
+poetry env use 3.11
+poetry install               # installs from poetry.lock
+
+copy example.env .env        # Windows
+cp example.env .env          # macOS / Linux
+
+poetry run pharmagen         # or: poetry run python app_production.py
 ```
 
-#### Step 4: Create Virtual Environment
-```bash
-# Create virtual environment in the project folder
-python -m venv venv
-```
+### Option C: 🐍 Pip / Conda (legacy fallback)
 
-#### Step 5: Open VS Code in Project Folder
 ```bash
-# Open VS Code in current directory
-code .
-```
+# Create + activate an environment with Python ≥3.10 (3.11 preferred)
+python -m venv .venv         # or: conda create -n pharmagen python=3.11 -y
+.venv\Scripts\activate       # Windows
+source .venv/bin/activate    # macOS / Linux / WSL
 
-#### Step 6: Activate Virtual Environment in VS Code
-```bash
-# In VS Code terminal (or Anaconda Prompt), activate venv
-venv\Scripts\activate
-
-# You should see (venv) in your terminal prompt
-```
-
-#### Step 7: Install Requirements
-```bash
-# Install all dependencies
 pip install -r requirements.txt
-```
+copy example.env .env        # Windows
+cp example.env .env          # macOS / Linux
 
-#### Step 8: Configure API Key
-```bash
-# Copy environment template
-copy .env.example .env
-
-# Edit .env file and add your Gemini API key
-# Get key from: https://makersuite.google.com/app/apikey
-notepad .env
-```
-
-#### Step 9: Run the Application
-```bash
-# Production version (recommended)
 python app_production.py
-
-# OR original version
-python app.py
 ```
 
-#### Step 10: Access Application
-Open your browser and go to: **http://localhost:7860**
-
----
-
-### Method 2: Using Standard Python (Alternative)
-
-#### Step 1: Install Python 3.11
-```bash
-# Check your version
-python --version
-
-# Download from python.org or use package manager
-# Windows: winget install Python.Python.3.11
-# Mac: brew install python@3.11
-# Linux: sudo apt install python3.11
-```
-
-#### Step 2: Navigate to Project
-```bash
-cd C:\Users\ANJAN27_new\OneDrive\Desktop\PharmaGEN
-```
-
-#### Step 3: Create Virtual Environment
-```bash
-# Windows
-python -m venv venv
-
-# Mac/Linux
-python3.11 -m venv venv
-```
-
-#### Step 4: Activate Virtual Environment
-```bash
-# Windows
-venv\Scripts\activate
-
-# Mac/Linux
-source venv/bin/activate
-```
-
-#### Step 5: Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-#### Step 6: Configure API Key
-```bash
-# Windows
-copy .env.example .env
-
-# Mac/Linux
-cp .env.example .env
-
-# Edit .env and add your Gemini API key
-# Get key from: https://makersuite.google.com/app/apikey
-```
-
-#### Step 7: Run Application
-```bash
-# Production version (recommended)
-python app_production.py
-
-# Original version
-python app.py
-
-# Docker
-docker-compose up
-```
-
-#### Step 8: Access Application
-Open browser: **http://localhost:7860**
-
----
-
-### Method 3: Using Docker (For Advanced Users)
+### Option D: 🐳 Docker
 
 ```bash
-# Make sure Docker is installed and running
 docker-compose up -d
-
 # Access at http://localhost:7860
 ```
+
+## 📦 Dependency Management Cheat Sheet
+
+- **Create/refresh .venv (uv)**: `uv venv` (add `--clear` to rebuild from scratch)
+- **Install / update (uv)**: `uv sync` (add `--extra redis` for Redis features, `--no-dev` for runtime-only)
+- **Install requirements only (uv)**: `uv pip install -r requirements.txt`
+- **Install / update (Poetry)**: `poetry install` / `poetry add <package>`
+- **Add a dependency**: `uv add <package>` *or* `poetry add <package>` (both update `pyproject.toml` + `poetry.lock`)
+- **Run the app without activating a venv**: `uv run pharmagen` or `poetry run pharmagen`
+- **Check the lockfile is current**: `uv lock --check` or `poetry lock --check`
 
 ## 📚 Documentation
 
@@ -257,8 +181,10 @@ PharmaGEN/
 ├── app.py                 # Original application
 ├── app_production.py      # Production-ready version
 ├── config.py              # Configuration management
-├── requirements.txt       # Python dependencies
-├── .env.example          # Environment template
+├── pyproject.toml        # Project metadata (Poetry / uv)
+├── poetry.lock           # Resolved dependency lockfile
+├── requirements.txt      # Legacy pip fallback dependencies
+├── example.env           # Environment template
 ├── Dockerfile            # Container configuration
 ├── docker-compose.yml    # Multi-container setup
 ├── QUICKSTART.md         # 5-minute setup guide
@@ -294,8 +220,14 @@ SERVER_PORT=8080
 
 **Module Not Found:**
 ```bash
-# Reinstall dependencies
-pip install -r requirements.txt
+# Reinstall dependencies inside the uv-managed .venv
+uv pip install -r requirements.txt
+```
+
+**PDF conflict warning (PyFPDF vs fpdf2):**
+```bash
+uv pip uninstall -y pyfpdf
+uv pip install --upgrade fpdf2
 ```
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for more troubleshooting.

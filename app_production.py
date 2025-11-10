@@ -9,6 +9,9 @@ import logging
 import time
 import hashlib
 from datetime import datetime
+from importlib import resources, util
+from pathlib import Path
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 import google.generativeai as genai
 from fpdf import FPDF
@@ -316,57 +319,164 @@ def get_gemini_response(prompt_text: str, chat_history: list = None, temp: float
         else:
             return f"❌ Error: Unable to process your request. Please try again later."
 
+# --- PDF Generation ---
+UNIFIED_FONT_FAMILY = "PharmaSans"
+FONT_FILE_CANDIDATES = [
+    "DejaVuSansCondensed.ttf",
+    "NotoSans-Regular.ttf",
+    "NotoSansCJK-Regular.ttc",
+    "unifont-13.0.06.ttf",
+]
+SYSTEM_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/arialuni.ttf",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Regular.otf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+]
+
+def _resolve_font_path():
+    try:
+        fonts_root = resources.files("fpdf") / "fonts" / "ttfonts"
+        if fonts_root.is_dir():
+            for font_name in FONT_FILE_CANDIDATES:
+                font_path = fonts_root / font_name
+                if font_path.is_file():
+                    return str(font_path)
+    except (ModuleNotFoundError, AttributeError, FileNotFoundError):
+        pass
+
+    try:
+        spec = util.find_spec("fpdf")
+        if spec and spec.origin:
+            base_path = Path(spec.origin).resolve().parent
+            candidate_root = base_path / "fonts" / "ttfonts"
+            if candidate_root.is_dir():
+                for font_name in FONT_FILE_CANDIDATES:
+                    font_path = candidate_root / font_name
+                    if font_path.is_file():
+                        return str(font_path)
+    except Exception:
+        pass
+
+    for path_str in SYSTEM_FONT_CANDIDATES:
+        if os.path.isfile(path_str):
+            return path_str
+    return None
+
+PDF_UNICODE_FONT_PATH = _resolve_font_path()
+
+class PDFReport(FPDF):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_auto_page_break(auto=True, margin=15)
+        self._font_family = 'Arial'
+        if PDF_UNICODE_FONT_PATH:
+            try:
+                self.add_font(UNIFIED_FONT_FAMILY, "", PDF_UNICODE_FONT_PATH, uni=True)
+                self.add_font(UNIFIED_FONT_FAMILY, "B", PDF_UNICODE_FONT_PATH, uni=True)
+                self.add_font(UNIFIED_FONT_FAMILY, "I", PDF_UNICODE_FONT_PATH, uni=True)
+                self._font_family = UNIFIED_FONT_FAMILY
+            except RuntimeError as font_error:
+                logger.warning(f"Failed to load unicode font ({PDF_UNICODE_FONT_PATH}): {font_error}")
+        else:
+            logger.warning("Unicode font not found. Falling back to Arial; some characters may not render.")
+
+    def header(self):
+        self.set_font(self._font_family, 'B', 14)
+        self.cell(0, 10, f'{Config.APP_TITLE} Medical Report', 0, 1, 'C')
+        self.ln(3)
+
+    def footer(self):
+        self.set_y(-20)
+        self.set_font(self._font_family, '', 8)
+        self.cell(0, 8, f'Page {self.page_no()}/{{nb}}', 0, 1, 'C')
+        self.set_font(self._font_family, 'I', 7)
+        disclaimer = 'Disclaimer: This is an AI-generated report for conceptual purposes only.'
+        self.multi_cell(0, 4, disclaimer, align='C')
+
+    def chapter_title(self, title: str):
+        self.set_font(self._font_family, 'B', 12)
+        self.set_text_color(40, 62, 90)
+        self.cell(0, 8, title, 0, 1, 'L')
+        self.set_text_color(0, 0, 0)
+
+    def chapter_body(self, body: str):
+        self.set_font(self._font_family, '', 10)
+        text = body if isinstance(body, str) else str(body)
+        self.multi_cell(0, 6, text)
+        self.ln(2)
+
+def _clean_summary_blocks(translated_summary: str) -> list[tuple[str, str]]:
+    sections = []
+    for raw in translated_summary.split("###"):
+        section = raw.strip()
+        if not section:
+            continue
+        if ":" in section:
+            title, content = section.split(":", 1)
+            sections.append((title.strip(), content.strip()))
+        else:
+            sections.append(("", section))
+    return sections
+
 def generate_pdf_report(chat_state: Dict[str, Any]) -> Optional[str]:
-    """Generates a text-based PDF report that handles all Unicode characters"""
+    """Generate a Unicode-capable PDF report and return its file path."""
     if not Config.ENABLE_PDF_DOWNLOAD:
         logger.warning("PDF download is disabled")
         return None
-    
+
+    state_data = chat_state.copy() if isinstance(chat_state, dict) else {}
+    translated_summary = state_data.get("translated_summary", "")
+    user_language = state_data.get("language", "English")
+
+    if not translated_summary:
+        logger.warning("No summary available to generate PDF")
+        return None
+
     try:
-        logger.info("Generating PDF report...")
-        state_data = chat_state.copy()
-        
-        user_language = state_data.get("language", "English")
-        translated_summary = state_data.get("translated_summary", "")
-        
-        if not translated_summary:
-            logger.warning("No summary available to generate PDF")
-            return None
-        
         os.makedirs(Config.PDF_OUTPUT_DIR, exist_ok=True)
-        
-        # Create a simple text file instead of PDF to avoid Unicode issues
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        txt_filename = f"pharmagen_report_{timestamp}.txt"
-        txt_output_path = os.path.join(Config.PDF_OUTPUT_DIR, txt_filename)
-        
-        # Write the report as plain text with full Unicode support
-        with open(txt_output_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 70 + "\n")
-            f.write(f"{Config.APP_TITLE} - MEDICAL REPORT\n")
-            f.write("=" * 70 + "\n\n")
-            f.write(f"Report Language: {user_language}\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 70 + "\n\n")
-            
-            # Clean up the summary and write it
-            clean_summary = translated_summary.replace("###", "").strip()
-            f.write(clean_summary)
-            
-            f.write("\n\n" + "=" * 70 + "\n")
-            f.write("DISCLAIMER\n")
-            f.write("=" * 70 + "\n")
-            f.write("This is an AI-generated report for conceptual purposes only.\n")
-            f.write("Always consult a qualified medical professional for health concerns.\n")
-            f.write("Hypothetical drugs mentioned are NOT real medications.\n")
-            f.write("=" * 70 + "\n")
-        
-        logger.info(f"Report saved to {txt_output_path}")
-        return txt_output_path
-        
+        pdf_filename = f"pharmagen_report_{timestamp}.pdf"
+        pdf_output_path = Path(Config.PDF_OUTPUT_DIR) / pdf_filename
+
+        pdf = PDFReport(format="A4")
+        pdf.alias_nb_pages()
+        pdf.add_page()
+
+        pdf.set_font(pdf._font_family, 'B', 16)
+        pdf.cell(0, 12, f"{Config.APP_TITLE} Medical Report", 0, 1, 'C')
+        pdf.set_font(pdf._font_family, 'I', 10)
+        pdf.cell(0, 8, f"Report language: {user_language}", 0, 1, 'C')
+        pdf.cell(0, 8, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 0, 1, 'C')
+        pdf.ln(4)
+
+        for title, content in _clean_summary_blocks(translated_summary):
+            if title:
+                pdf.chapter_title(f"{title}:")
+            pdf.chapter_body(content)
+
+        pdf.chapter_title("Disclaimer:")
+        pdf.chapter_body("This is an AI-generated report for conceptual purposes only. Consult a medical professional.")
+
+        pdf.output(str(pdf_output_path))
+        logger.info(f"Report saved to {pdf_output_path}")
+        return str(pdf_output_path)
     except Exception as e:
         logger.error(f"Error generating report: {e}", exc_info=True)
         return None
+
+def download_pdf_in_colab(pdf_path: Optional[str]):
+    if IN_COLAB and pdf_path and os.path.exists(pdf_path):
+        try:
+            files.download(pdf_path)
+            return "PDF downloaded in Colab"
+        except Exception as exc:
+            logger.warning(f"Colab download failed: {exc}")
+            return f"Failed to download in Colab: {exc}"
+    return pdf_path or ""
 
 # --- Chat Stages ---
 CHAT_STAGE_ASK_LANGUAGE = "ask_language"
@@ -392,13 +502,37 @@ def initialize_chat_state():
         "session_start": time.time()
     }
 
+def _normalize_chat_history(history):
+    """Convert incoming chat history entries to mutable lists."""
+    if not history:
+        return []
+    normalized = []
+    for entry in history:
+        if isinstance(entry, tuple):
+            normalized.append([entry[0], entry[1]])
+        elif isinstance(entry, list):
+            if len(entry) >= 2:
+                normalized.append([entry[0], entry[1]])
+            elif len(entry) == 1:
+                normalized.append([entry[0], ""])
+            else:
+                normalized.append(["", ""])
+        else:
+            normalized.append([str(entry), ""])
+    return normalized
+
+def _prepare_history_for_return(history):
+    """Convert mutable history entries back to tuples for Gradio."""
+    return [tuple(item) for item in history]
+
 def process_chat(message: str, history: list, state: Dict[str, Any]):
     """Process user messages with rate limiting and error handling"""
     try:
         message = sanitize_input(message)
+        history = _normalize_chat_history(history)
         
         if not message:
-            return history, "", "", state
+            return _prepare_history_for_return(history), "", "", state
         
         user_id = state.get("user_id", "anonymous")
         if not check_rate_limit(user_id):
@@ -407,10 +541,7 @@ def process_chat(message: str, history: list, state: Dict[str, Any]):
                 history[-1] = [message, error_msg]
             else:
                 history = [[message, error_msg]]
-            return history, "", "", state
-        
-        if history is None:
-            history = []
+            return _prepare_history_for_return(history), "", "", state
         
         history.append([message, ""])
         
@@ -675,7 +806,7 @@ Keep each section brief and direct. No extra explanations or bullet point breakd
             translated_summary += f"**{gemini_translate('Safety', 'en', user_lang_code)}:** {translated_safety}\n\n"
         
         logger.info(f"Chat processed for user {user_id}, stage: {current_stage}")
-        return history, english_summary, translated_summary, state
+        return _prepare_history_for_return(history), english_summary, translated_summary, state
     
     except Exception as e:
         logger.error(f"Error in chat processing: {e}", exc_info=True)
@@ -686,7 +817,7 @@ Keep each section brief and direct. No extra explanations or bullet point breakd
         else:
             history = [[message, error_message]]
         
-        return history, "Error occurred", "Error occurred", state
+        return _prepare_history_for_return(history), "Error occurred", "Error occurred", state
 
 # --- Gradio Interface ---
 def create_interface():
@@ -757,6 +888,8 @@ def create_interface():
         chat_state = gr.State(initialize_chat_state())
         
         # Main layout - chat takes most space
+        colab_status = None
+
         with gr.Row():
             # Chat area - takes 70% of width
             with gr.Column(scale=7):
@@ -795,11 +928,14 @@ def create_interface():
                 
                 with gr.Row():
                     if Config.ENABLE_PDF_DOWNLOAD:
-                        download_btn = gr.Button("📥 PDF", variant="secondary", scale=1)
+                        download_btn = gr.DownloadButton("📥 PDF", variant="secondary", scale=1)
                     clear_btn = gr.Button("🔄 New", variant="stop", scale=1)
                 
                 if Config.ENABLE_PDF_DOWNLOAD:
-                    pdf_output = gr.File(label="", visible=False)
+                    pdf_preview = gr.File(label="Report Preview", visible=False, interactive=False)
+                    pdf_path_state = gr.State(value=None)
+                    if IN_COLAB:
+                        colab_status = gr.Textbox(visible=False)
         
         # Compact disclaimer
         if Config.SHOW_DISCLAIMER:
@@ -836,15 +972,56 @@ def create_interface():
             download_btn.click(
                 fn=generate_pdf_report,
                 inputs=[chat_state],
-                outputs=[pdf_output]
+                outputs=[pdf_path_state]
             )
+
+            download_btn.click(
+                fn=lambda pdf_path: (
+                        gr.update(
+                        value=pdf_path,
+                        visible=True,
+                        label=f"📥 PDF ({Path(pdf_path).name})" if pdf_path else "📥 PDF"
+                    ),
+                        gr.update(value=pdf_path, visible=bool(pdf_path))
+                ),
+                inputs=[pdf_path_state],
+                outputs=[download_btn, pdf_preview]
+            )
+
+            if IN_COLAB:
+                download_btn.click(
+                    fn=download_pdf_in_colab,
+                    inputs=[pdf_path_state],
+                    outputs=[colab_status]
+                )
         
+        def _reset_session():
+            resets = (
+                [], 
+                "", 
+                "*Report will appear after diagnosis*", 
+                initialize_chat_state(),
+            )
+            if Config.ENABLE_PDF_DOWNLOAD:
+                download_reset = gr.update(value=None, visible=True, label="📥 PDF")
+                preview_reset = gr.update(value=None, visible=False)
+                state_reset = None
+                if IN_COLAB:
+                    status_reset = ""
+                    return (*resets, download_reset, preview_reset, state_reset, status_reset)
+                return (*resets, download_reset, preview_reset, state_reset)
+            return resets
+
+        reset_outputs = [chatbot, english_summary, translated_summary, chat_state]
+        if Config.ENABLE_PDF_DOWNLOAD:
+            reset_outputs.extend([download_btn, pdf_preview, pdf_path_state])
+            if IN_COLAB:
+                reset_outputs.append(colab_status)
+
         clear_btn.click(
-            fn=lambda: ([], "", 
-                       "*Report will appear after diagnosis*", 
-                       initialize_chat_state()),
+            fn=_reset_session,
             inputs=None,
-            outputs=[chatbot, english_summary, translated_summary, chat_state]
+            outputs=reset_outputs
         )
     
     return demo

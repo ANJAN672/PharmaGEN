@@ -1,6 +1,9 @@
 import gradio as gr
 import re
 import os
+from datetime import datetime
+from importlib import resources, util
+from pathlib import Path
 import google.generativeai as genai
 from fpdf import FPDF  # For PDF generation
 
@@ -22,7 +25,7 @@ def download_pdf_in_colab(pdf_path):
 
 # --- Configuration ---
 # Gemini API Model
-GEMINI_MODEL_NAME = "gemini-1.5-flash-latest"  # Or "gemini-1.5-pro-latest"
+GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"  # Or "gemini-1.5-pro-latest"
 
 # Language mapping for translation
 LANG_CODES = {
@@ -115,108 +118,166 @@ def get_gemini_response(prompt_text, chat_history=None, temp=0.7):
             return f"Error: Rate limit exceeded. Try again later. {e}"
         return f"Error communicating with Gemini API: {e}"
 
+UNIFIED_FONT_FAMILY = "PharmaSans"
+FONT_FILE_CANDIDATES = [
+    "DejaVuSansCondensed.ttf",
+    "NotoSans-Regular.ttf",
+    "NotoSansCJK-Regular.ttc",
+    "unifont-13.0.06.ttf",
+]
+SYSTEM_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/arialuni.ttf",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Regular.otf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+]
+
+def _resolve_font_path():
+    # Look inside the installed fpdf package for bundled unicode fonts
+    try:
+        fonts_root = resources.files("fpdf") / "fonts" / "ttfonts"
+        if fonts_root.is_dir():
+            for font_name in FONT_FILE_CANDIDATES:
+                font_path = fonts_root / font_name
+                if font_path.is_file():
+                    return str(font_path)
+    except (ModuleNotFoundError, AttributeError, FileNotFoundError):
+        pass
+
+    try:
+        spec = util.find_spec("fpdf")
+        if spec and spec.origin:
+            base_path = Path(spec.origin).resolve().parent
+            candidate_root = base_path / "fonts" / "ttfonts"
+            if candidate_root.is_dir():
+                for font_name in FONT_FILE_CANDIDATES:
+                    font_path = candidate_root / font_name
+                    if font_path.is_file():
+                        return str(font_path)
+    except Exception:
+        pass
+
+    for path_str in SYSTEM_FONT_CANDIDATES:
+        if os.path.isfile(path_str):
+            return path_str
+    return None
+
+PDF_UNICODE_FONT_PATH = _resolve_font_path()
+
 class PDFReport(FPDF):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_auto_page_break(auto=True, margin=15)
+        self._font_family = 'Arial'
+        if PDF_UNICODE_FONT_PATH:
+            try:
+                self.add_font(UNIFIED_FONT_FAMILY, "", PDF_UNICODE_FONT_PATH, uni=True)
+                self.add_font(UNIFIED_FONT_FAMILY, "B", PDF_UNICODE_FONT_PATH, uni=True)
+                self.add_font(UNIFIED_FONT_FAMILY, "I", PDF_UNICODE_FONT_PATH, uni=True)
+                self._font_family = UNIFIED_FONT_FAMILY
+            except RuntimeError as font_error:
+                print(f"Warning: Failed to load unicode font ({PDF_UNICODE_FONT_PATH}): {font_error}")
+        else:
+            print("Warning: Unicode font not found. Falling back to Arial - some characters may not render.")
+
     def header(self):
-        self.set_font('Arial', 'B', 12)
+        self.set_font(self._font_family, 'B', 14)
         self.cell(0, 10, 'PharmaGPT Medical Report', 0, 1, 'C')
-        self.ln(5)
+        self.ln(4)
 
     def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Page {self.page_no()}/{{nb}}', 0, 0, 'C')
-        self.ln(5)
-        self.set_font('Arial', 'I', 7)
-        self.cell(0, 10, 'Disclaimer: This is an AI-generated report for conceptual purposes only.', 0, 0, 'C')
+        self.set_y(-20)
+        self.set_font(self._font_family, '', 8)
+        self.cell(0, 8, f'Page {self.page_no()}/{{nb}}', 0, 1, 'C')
+        self.set_font(self._font_family, 'I', 7)
+        disclaimer = 'Disclaimer: This is an AI-generated report for conceptual purposes only.'
+        self.multi_cell(0, 4, disclaimer, align='C')
 
     def chapter_title(self, title):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, self._sanitize_text(title), 0, 1, 'L')
-        self.ln(2)
+        self.set_font(self._font_family, 'B', 12)
+        self.set_text_color(40, 62, 90)
+        self.cell(0, 8, title, 0, 1, 'L')
+        self.set_text_color(0, 0, 0)
 
     def chapter_body(self, body):
-        self.set_font('Arial', '', 10)
-        if not isinstance(body, str):
-            body = str(body)
-        self.multi_cell(0, 5, self._sanitize_text(body))
-        self.ln(5)
-        
-    def _sanitize_text(self, text):
-        # Replace non-Latin characters with their closest Latin equivalents or descriptions
-        return text.encode('latin-1', 'replace').decode('latin-1')
+        self.set_font(self._font_family, '', 10)
+        text = body if isinstance(body, str) else str(body)
+        self.multi_cell(0, 6, text)
+        self.ln(2)
+
+def _clean_summary_blocks(translated_summary):
+    sections = []
+    parts = translated_summary.split("###")
+    for raw_section in parts:
+        section = raw_section.strip()
+        if not section:
+            continue
+        if ":" in section:
+            title, content = section.split(":", 1)
+            sections.append((title.strip(), content.strip()))
+        else:
+            sections.append(("", section))
+    return sections
 
 def generate_pdf_report(chat_state):
-    """Generates a simplified PDF report by directly using the translated summary."""
+    """Generates a PDF report using unicode-aware fonts."""
     print("Generating PDF report...")
-    state_data = chat_state.copy()
+    state_data = chat_state.copy() if isinstance(chat_state, dict) else {}
 
-    # Get user's language and summary
-    user_language = state_data.get("language", "English")
     translated_summary = state_data.get("translated_summary", "")
-    
-    # If no summary is available yet
+    user_language = state_data.get("language", "English")
+
     if not translated_summary:
         print("No summary available to generate PDF")
         return None
 
+    report_dir = Path.cwd() / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pdf_filename = f"pharma_gpt_report_{timestamp}.pdf"
+    pdf_output_path = str((report_dir / pdf_filename).resolve())
+
     try:
-        # Create PDF
-        pdf = PDFReport()
+        pdf = PDFReport(format="A4")
         pdf.alias_nb_pages()
         pdf.add_page()
-        
-        # Add title
-        pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, "PharmaGPT Medical Report", 0, 1, 'C')
-        pdf.ln(5)
-        
-        # Add language indicator
-        pdf.set_font('Arial', 'I', 10)
-        pdf.cell(0, 10, f"Report in {user_language}", 0, 1, 'C')
-        pdf.ln(10)
-        
-        # Convert markdown headers to PDF sections
-        # Split the summary by sections (marked with ###)
-        sections = translated_summary.split("###")
-        
-        for section in sections:
-            if not section.strip():
-                continue
-                
-            # Try to split into title and content
-            parts = section.split(":", 1)
-            if len(parts) == 2:
-                title = parts[0].strip()
-                content = parts[1].strip()
-                
-                # Add section title
-                pdf.set_font('Arial', 'B', 12)
-                pdf.cell(0, 10, pdf._sanitize_text(title + ":"), 0, 1, 'L')
-                
-                # Add section content
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, pdf._sanitize_text(content))
-                pdf.ln(5)
-            else:
-                # If we can't split properly, just add the whole section
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, pdf._sanitize_text(section))
-                pdf.ln(5)
-        
-        # Add disclaimer
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, "Disclaimer:", 0, 1, 'L')
-        pdf.set_font('Arial', 'I', 10)
-        pdf.multi_cell(0, 5, "This is an AI-generated report for conceptual purposes only. Consult a medical professional.")
-    
-        # Save PDF
-        pdf_output_path = "./pharma_gpt_report.pdf"
+
+        # Title block
+        pdf.set_font(pdf._font_family, 'B', 16)
+        pdf.cell(0, 12, "PharmaGPT Medical Report", 0, 1, 'C')
+        pdf.set_font(pdf._font_family, 'I', 10)
+        pdf.cell(0, 8, f"Report language: {user_language}", 0, 1, 'C')
+        pdf.ln(4)
+
+        for title, content in _clean_summary_blocks(translated_summary):
+            if title:
+                pdf.chapter_title(f"{title}:")
+            pdf.chapter_body(content)
+
+        pdf.chapter_title("Disclaimer:")
+        pdf.chapter_body("This is an AI-generated report for conceptual purposes only. Consult a medical professional.")
+
         pdf.output(pdf_output_path)
         print(f"PDF report saved to {pdf_output_path}")
         return pdf_output_path
     except Exception as e:
         print(f"Error generating PDF: {e}")
         return None
+
+def prepare_pdf_ui(pdf_path):
+    if not pdf_path:
+        return (
+            gr.update(value=None, visible=True, label="📥 Download PDF Report"),
+            gr.update(value=None, visible=False),
+        )
+    file_name = os.path.basename(pdf_path)
+    return (
+        gr.update(value=pdf_path, visible=True, label=f"📥 Download PDF Report ({file_name})"),
+        gr.update(value=pdf_path, visible=True),
+    )
 
 # --- Chat Stages ---
 CHAT_STAGE_ASK_LANGUAGE = "ask_language"
@@ -240,11 +301,36 @@ def initialize_chat_state():
         "gemini_chat_history_manual": []
     }
 
+def _normalize_chat_history(history):
+    """Convert incoming chat history entries to mutable lists."""
+    if not history:
+        return []
+    normalized = []
+    for entry in history:
+        if isinstance(entry, tuple):
+            normalized.append([entry[0], entry[1]])
+        elif isinstance(entry, list):
+            if len(entry) >= 2:
+                normalized.append([entry[0], entry[1]])
+            elif len(entry) == 1:
+                normalized.append([entry[0], ""])
+            else:
+                normalized.append(["", ""])
+        else:
+            normalized.append([str(entry), ""])
+    return normalized
+
+def _prepare_history_for_return(history):
+    """Convert mutable history entries back to tuples for Gradio."""
+    return [tuple(item) for item in history]
+
 # Process chat messages
 def process_chat(message, history, state):
     """Process user messages and generate responses."""
     if history is None:
         history = []
+    else:
+        history = _normalize_chat_history(history)
     
     # Add user message to history
     history.append([message, ""])
@@ -539,7 +625,7 @@ def process_chat(message, history, state):
         else:
             history = [[message, bot_response_user_lang]]
         
-        return history, english_summary, translated_summary, state
+        return _prepare_history_for_return(history), english_summary, translated_summary, state
     
     except Exception as e:
         print(f"Error in chat processing: {e}")
@@ -554,7 +640,7 @@ def process_chat(message, history, state):
         else:
             history = [[message, error_message]]
         
-        return history, f"Error: {error_message}", f"Error: {error_message}", initialize_chat_state()
+        return _prepare_history_for_return(history), f"Error: {error_message}", f"Error: {error_message}", initialize_chat_state()
 
 # --- Gradio Interface ---
 def create_interface():
@@ -726,10 +812,12 @@ def create_interface():
                 )
                 
                 with gr.Row(elem_classes="button-row"):
-                    download_btn = gr.Button("📥 Download PDF Report", variant="secondary", elem_classes="download-btn")
+                    download_btn = gr.DownloadButton("📥 Download PDF Report", variant="secondary", elem_classes="download-btn")
                     clear_btn = gr.Button("🔄 New Consultation", variant="stop", elem_classes="clear-btn")
-                
-                pdf_output = gr.File(label="Download Report", visible=False)
+
+                pdf_preview = gr.File(label="Report Preview", visible=False, interactive=False)
+                colab_status = gr.Textbox(visible=False)
+                pdf_path_state = gr.State(value=None)
         
         # Disclaimer with improved styling
         with gr.Accordion("⚠️ Important Medical Disclaimer", open=False):
@@ -777,31 +865,35 @@ def create_interface():
             outputs=txt
         )
         
+        download_btn.click(
+            fn=generate_pdf_report,
+            inputs=[chat_state],
+            outputs=[pdf_path_state]
+        )
+
+        download_btn.click(
+            fn=prepare_pdf_ui,
+            inputs=[pdf_path_state],
+            outputs=[download_btn, pdf_preview]
+        )
+
         if IN_COLAB:
-            # For Colab, use a direct download approach
             download_btn.click(
-                fn=generate_pdf_report,
-                inputs=[chat_state],
-                outputs=[pdf_output]
-            ).then(
                 fn=download_pdf_in_colab,
-                inputs=[pdf_output],
-                outputs=[gr.Textbox(visible=False)]
+                inputs=[pdf_path_state],
+                outputs=[colab_status]
             )
-        else:
-            # For regular environments
-            download_btn.click(
-                fn=generate_pdf_report,
-                inputs=[chat_state],
-                outputs=[pdf_output]
-            )
-        
+
         clear_btn.click(
             fn=lambda: ([], "", 
                        "Your report will appear here after diagnosis in your chosen language.", 
-                       initialize_chat_state()),
+                       initialize_chat_state(),
+                       gr.update(value=None, visible=True, label="📥 Download PDF Report"),
+                       gr.update(value=None, visible=False),
+                       None,
+                       ""),
             inputs=None,
-            outputs=[chatbot, english_summary, translated_summary, chat_state]
+            outputs=[chatbot, english_summary, translated_summary, chat_state, download_btn, pdf_preview, pdf_path_state, colab_status]
         )
         
         # Footer with animated effect
